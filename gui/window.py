@@ -103,6 +103,15 @@ class MainWindow(QMainWindow):
             widget.textChanged.connect(self._invalidate_files)
         self.folder.changed.connect(self._invalidate_files)
 
+        # 창을 닫을 때만 저장하면 강제 종료 시 유실될 수 있다. 매크로 파일
+        # 위치·실행 정보·매크로 이름처럼 다시 치기 번거로운 값은 칸을 벗어나는
+        # 즉시 저장해 둔다(조용히 — 실패해도 팝업 없이 로그만 남김).
+        for field in (self.personal, self.eval_date, self.var_date,
+                     self.evaluator, self.reviewer):
+            field.editingFinished.connect(lambda: self._save_settings())
+        for box in self._macro_boxes():
+            box.lineEdit().editingFinished.connect(lambda: self._save_settings())
+
     def _build_left(self) -> QWidget:
         panel = QWidget()
         panel.setObjectName("panel")
@@ -140,15 +149,22 @@ class MainWindow(QMainWindow):
         label.setWordWrap(True)
         label.setToolTip(str(path))
 
+        save_btn = QPushButton("지금 저장")
+        save_btn.setProperty("secondary", True)
+        save_btn.setFixedWidth(76)
+        save_btn.setToolTip("입력한 값을 바로 이 파일에 저장하고 결과를 로그에 표시합니다.")
+        save_btn.clicked.connect(lambda: self._save_settings(quiet=False))
+
         open_btn = QPushButton("폴더 열기")
         open_btn.setProperty("secondary", True)
-        open_btn.setFixedWidth(84)
+        open_btn.setFixedWidth(76)
         open_btn.clicked.connect(self._open_config_folder)
 
         row = QWidget()
         layout = QHBoxLayout(row)
         layout.setContentsMargins(0, 6, 0, 0)
         layout.addWidget(label, 1)
+        layout.addWidget(save_btn)
         layout.addWidget(open_btn)
         return row
 
@@ -735,11 +751,13 @@ class MainWindow(QMainWindow):
             self.console.append_message(
                 "표에서 파일을 더블클릭하면 그 파일의 단계별 상세를 볼 수 있습니다.", "warning"
             )
+        self._save_settings()   # 실행이 끝날 때도 한 번 더 저장해 둔다(강제 종료 대비)
 
     def _on_failed(self, message: str) -> None:
         self.console.append_message(f"❌ {message}", "error")
         self.progress.reset()
         self.statusBar().showMessage("실행 실패")
+        self._save_settings()
         QMessageBox.critical(self, "실행 실패", message)
 
     def _set_running(self, running: bool) -> None:
@@ -889,20 +907,36 @@ class MainWindow(QMainWindow):
             else:
                 widget.setText(store.value(key, "", str))
 
-    def _save_settings(self) -> None:
-        store = settings()
-        store.setValue("root/last", self.folder.path())
-        for name, widget in self._persistable():
-            key = f"field/{name}"
-            if isinstance(widget, QCheckBox):
-                store.setValue(key, widget.isChecked())
-            elif isinstance(widget, (QSpinBox, QDoubleSpinBox)):
-                store.setValue(key, widget.value())
-            elif isinstance(widget, QComboBox):
-                store.setValue(key, widget.currentText() if widget.isEditable()
-                               else widget.currentIndex())
-            else:
-                store.setValue(key, widget.text())
+    def _save_settings(self, quiet: bool = True) -> bool:
+        """설정을 JSON 파일에 저장한다.
+
+        창을 닫을 때만 저장하면 앱이 강제 종료되거나 저장 중 오류가 조용히
+        묻힐 때 사용자가 알아챌 방법이 없다. 그래서 주요 필드를 벗어날
+        때·매 실행이 끝날 때도 부르고(quiet=True, 실패해도 로그만 남김),
+        [지금 저장] 버튼을 누르면 성공/실패를 콘솔에 분명히 보여준다
+        (quiet=False).
+        """
+        try:
+            store = settings()
+            store.setValue("root/last", self.folder.path())
+            for name, widget in self._persistable():
+                key = f"field/{name}"
+                if isinstance(widget, QCheckBox):
+                    store.setValue(key, widget.isChecked())
+                elif isinstance(widget, (QSpinBox, QDoubleSpinBox)):
+                    store.setValue(key, widget.value())
+                elif isinstance(widget, QComboBox):
+                    store.setValue(key, widget.currentText() if widget.isEditable()
+                                   else widget.currentIndex())
+                else:
+                    store.setValue(key, widget.text())
+        except Exception as exc:                              # noqa: BLE001 - 저장 실패를 숨기지 않는다
+            if hasattr(self, "console"):
+                self.console.append_message(f"⚠ 설정 저장 실패: {exc}", "warning")
+            return False
+        if not quiet and hasattr(self, "console"):
+            self.console.append_message(f"설정을 저장했습니다: {config_path()}", "success")
+        return True
 
     def closeEvent(self, event) -> None:
         if self.worker is not None and self.worker.isRunning():

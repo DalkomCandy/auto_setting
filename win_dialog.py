@@ -147,6 +147,20 @@ class Control:
         return "edit" in self.cls.lower()
 
     @property
+    def is_ref_edit(self) -> bool:
+        """셀 범위를 고르는 RefEdit 칸인지.
+
+        클래스명이 보통 'RefEdit20WndClass' 처럼 'edit' 를 포함하고 있어
+        is_edit 로도 True 가 나온다. 그래서 '비어 있는 칸을 고른다'는
+        pick_edit() 의 판별만으로는, RefEdit(SELECT RANGE) 가 아직
+        '$B$2' 로 채워지기 전 찰나를 잡으면 거기에 펀드아이디를 넣어버릴
+        수 있다 — 문자열이 유효한 셀 범위가 아니니 "이 이름에 대한
+        구문이 잘못되었습니다" 오류로 이어진다. 그래서 이름으로도 한 번
+        더 걸러낸다.
+        """
+        return "refedit" in self.cls.lower()
+
+    @property
     def is_button(self) -> bool:
         return self.cls == "Button"
 
@@ -235,21 +249,28 @@ def pick_edit(controls: List[Control], index: int = -1) -> Optional[Control]:
     """값을 넣을 입력칸을 고른다.
 
     '수익 개요' 대화상자처럼 입력칸이 둘(SELECT RANGE + 펀드아이디)일 때,
-    SELECT RANGE 에는 선택한 셀($B$2)이 이미 채워져 있고 펀드아이디만 비어 있다.
-    그래서 입력칸이 여러 개면 '비어 있는 첫 칸'을 고르는 것이 가장 안전하다.
+    SELECT RANGE 는 RefEdit(셀 범위 선택) 컨트롤이라 절대 건드리면 안 된다 —
+    거기에 펀드아이디 같은 문자열을 넣으면 유효한 셀 범위가 아니라서
+    "이 이름에 대한 구문이 잘못되었습니다" 오류로 이어진다. RefEdit 는
+    클래스명에 'edit' 가 포함돼 있어 '비어 있는 칸' 판별만으로는 부족하다
+    (특히 Excel 이 아직 $B$2 를 채우기 전 찰나를 잡으면 빈 칸으로 보인다).
+    그래서 RefEdit 가 아닌 칸을 먼저 찾고, 그 안에서 '비어 있는 첫 칸'을 고른다.
 
-    index >= 0 이면 자동 판별 대신 그 순번의 칸을 그대로 쓴다.
+    index >= 0 이면 자동 판별 대신 그 순번의 칸(RefEdit 포함 전체 목록 기준)을
+    그대로 쓴다 — 자동 판별이 틀렸을 때 사용자가 직접 지정하는 용도다.
     """
     edits = [c for c in controls if c.is_edit]
     if not edits:
         return None
     if index >= 0:
         return edits[index] if index < len(edits) else None
-    if len(edits) > 1:
-        empty = [c for c in edits if not c.text.strip()]
+
+    candidates = [c for c in edits if not c.is_ref_edit] or edits
+    if len(candidates) > 1:
+        empty = [c for c in candidates if not c.text.strip()]
         if empty:
             return empty[0]
-    return edits[0]
+    return candidates[0]
 
 
 def confirm_dialog(hwnd: int, controls: List[Control], timeout: float) -> str:
@@ -305,7 +326,14 @@ def format_dialog_report(hwnd: int, controls: List[Control]) -> str:
         f"  컨트롤  : {len(controls)}개",
     ]
     for ctrl in controls:
-        tag = "EDIT  " if ctrl.is_edit else ("BUTTON" if ctrl.is_button else "      ")
+        if ctrl.is_ref_edit:
+            tag = "REFEDIT"       # SELECT RANGE — 절대 값을 넣지 않는 칸
+        elif ctrl.is_edit:
+            tag = "EDIT   "
+        elif ctrl.is_button:
+            tag = "BUTTON "
+        else:
+            tag = "       "
         lines.append(
             f"    {tag} cls={ctrl.cls:<16} id={ctrl.ctrl_id:<6} text={ctrl.text!r}"
         )
