@@ -38,6 +38,7 @@ else:
 XL_DOWN = -4121
 XL_SHEET_VISIBLE = -1
 XL_SHIFT_UP = -4162
+COLOR_WHITE = 0xFFFFFF
 
 #: 이 행 아래로는 데이터가 아니라 빈 시트로 본다 (End(xlDown) 폭주 방지)
 MAX_DATA_ROW = 1_000_000
@@ -193,6 +194,31 @@ def is_blank(cell) -> bool:
     return stringify(cell.Value) == ""
 
 
+def is_file_locked(path: Path) -> bool:
+    """다른 프로그램이 이 파일을 쓰기 모드로 잡고 있어 우리가 쓰기로 열 수 없는지 확인.
+
+    파일 하나를 쓰기로 여는 순간 Excel 이 "사용 중인 파일" 대화상자를 띄울 수
+    있는데, 그건 우리 감시 스레드가 기다리는 InputBox 가 아니라서 그대로
+    멈춰버린다. 미리 확인해 명확한 오류로 끝내는 편이 낫다.
+
+    UNC 경로(네트워크 드라이브)에서는 rename 트릭이 안 먹을 수 있어 open() 방식을 쓴다.
+    """
+    if not path.exists():
+        return False
+    path_str = str(path)
+    if path_str.startswith(("\\\\", "//")):
+        try:
+            with open(path, "r+b"):
+                return False
+        except OSError:
+            return True
+    try:
+        path.rename(path)
+        return False
+    except OSError:
+        return True
+
+
 def find_name(book, target: str):
     """워크북/시트 범위를 통틀어 이름을 찾는다 (대소문자 무시)."""
     wanted = target.casefold()
@@ -297,6 +323,9 @@ class WorkbookPipeline:
     def run(self) -> FileResult:
         try:
             self._open()
+        except StepError as exc:
+            self.result.steps.append(StepResult(0, "파일 열기", "failed", str(exc)))
+            return self.result
         except com_error as exc:
             self.result.steps.append(StepResult(
                 0, "파일 열기", "failed", bot.describe_com_error(exc)))
@@ -366,8 +395,19 @@ class WorkbookPipeline:
 
     # ── 파일 열고 닫기 ───────────────────────────
     def _open(self) -> None:
+        # 저장할 예정이 없는 실행(미리보기·N단계까지 테스트)은 쓰기 권한이
+        # 필요 없다. 읽기 전용으로 열면 그 파일이 다른 곳에서 이미 열려
+        # 있어도(예: 사용자가 확인차 켜 둔 경우) 충돌 없이 열 수 있다.
+        read_only = self.stop_after < 11
+
+        if not read_only and is_file_locked(self.path):
+            raise StepError(
+                f"파일이 다른 프로그램에서 사용 중이라 쓰기 모드로 열 수 없습니다: {self.path}\n"
+                "파일을 닫고 다시 실행하거나, [읽기만]/부분 실행으로 먼저 확인해 보세요."
+            )
+
         self.xl.DisplayAlerts = False
-        self.book = self.xl.Workbooks.Open(str(self.path), UpdateLinks=0, ReadOnly=False)
+        self.book = self.xl.Workbooks.Open(str(self.path), UpdateLinks=0, ReadOnly=read_only)
         self.xl.DisplayAlerts = True
         self.book.Activate()
 
@@ -467,6 +507,12 @@ class WorkbookPipeline:
             # Clear 와 달리 셀 자체를 없애므로 병합·조건부서식·유효성검사까지 사라진다.
             self.sheet.Cells.Delete(XL_SHIFT_UP)
             how = "셀 전체 삭제"
+
+        # F_1 이 있던 시트 전체를 흰색으로 채운다. Delete/Clear 만으로는 배경이
+        # '채우기 없음'(테마에 따라 회색조로 보일 수 있음)이 되므로, 격자선까지
+        # 덮이는 확실한 흰 배경을 원하면 이 칠하기가 필요하다.
+        self.sheet.Cells.Interior.Color = COLOR_WHITE
+        how += " · 시트 전체 흰색으로 채움"
 
         deleted, kept = 0, []
         for item in list(self.book.Names):

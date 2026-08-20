@@ -20,7 +20,6 @@ from PyQt6.QtWidgets import (
 
 import excel_macro_bot as bot
 import fund_pipeline as fp
-from .overlay import ProcessingOverlay
 from .widgets import (
     STATUS_COLORS, STATUS_LABELS, ConsoleView, FolderRow, ProgressPanel,
     config_path, settings,
@@ -73,7 +72,6 @@ class MainWindow(QMainWindow):
         self.by_path: Dict[str, fp.FileResult] = {}
         self.worker: Optional[PipelineWorker] = None
         self.helper: Optional[object] = None
-        self.overlay = ProcessingOverlay(self._stop)
 
         self._build_ui()
         self._load_settings()
@@ -679,19 +677,12 @@ class MainWindow(QMainWindow):
         self.worker.completed.connect(self._on_completed)
         self.worker.failed.connect(self._on_failed)
         self.worker.finished.connect(lambda: self._set_running(False))
-        self.worker.finished.connect(self.overlay.hide_all)
-
-        # Excel 이 셀을 선택하고 매크로 창을 열고 닫는 동안 화면을 흰색으로
-        # 덮는다 — 다른 사람 눈에 데이터가 노출되지 않게 하고, 사용자가
-        # 실수로 그 위를 클릭해 자동화(Win32 창 탐색)를 방해하지 않게 한다.
-        self.overlay.show_all(status=f"0 / {len(files)}")
         self.worker.start()
 
     def _stop(self) -> None:
         if self.worker is not None and self.worker.isRunning():
             self.worker.stop()
             self.stop_btn.setEnabled(False)
-            self.overlay.update_status("중지 요청됨 — 처리 중인 파일이 끝나면 멈춥니다…")
             self.console.append_message(
                 "중지 요청 — 지금 처리 중인 파일이 끝나면 멈춥니다.", "warning"
             )
@@ -702,7 +693,6 @@ class MainWindow(QMainWindow):
             self._set_status(row, "running")
             self.table.scrollToItem(self.table.item(row, 0))
         self.progress.advance(index - 1, total, path.name)
-        self.overlay.update_status(f"{index} / {total} 처리 중\n{path.name}")
 
     def _on_file_done(self, index: int, total: int, result: fp.FileResult) -> None:
         self.results.append(result)
@@ -723,7 +713,6 @@ class MainWindow(QMainWindow):
         self.progress.advance(index, total, result.path.name)
 
     def _on_completed(self, results: List[fp.FileResult]) -> None:
-        self.overlay.hide_all()
         counts = {"ok": 0, "skipped": 0, "failed": 0}
         for item in results:
             counts[item.status] += 1
@@ -748,7 +737,6 @@ class MainWindow(QMainWindow):
             )
 
     def _on_failed(self, message: str) -> None:
-        self.overlay.hide_all()
         self.console.append_message(f"❌ {message}", "error")
         self.progress.reset()
         self.statusBar().showMessage("실행 실패")
@@ -918,8 +906,6 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         if self.worker is not None and self.worker.isRunning():
-            was_covered = self.overlay.is_visible
-            self.overlay.hide_all()   # 흰 화면 뒤에 확인창이 가려지지 않게
             answer = QMessageBox.question(
                 self, "작업 진행 중",
                 "매크로를 실행하는 중입니다. 정말 종료할까요?\n"
@@ -928,12 +914,9 @@ class MainWindow(QMainWindow):
                 QMessageBox.StandardButton.No,
             )
             if answer != QMessageBox.StandardButton.Yes:
-                if was_covered:
-                    self.overlay.show_all(self.progress.status.text())
                 event.ignore()
                 return
             self.worker.stop()
             self.worker.wait(3000)
-        self.overlay.hide_all()
         self._save_settings()
         event.accept()
