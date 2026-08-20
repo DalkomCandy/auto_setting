@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# 실행 결과
+*.log
+수익보고서_결과_*.csv
+macro_bot_log_*.csv
+
+# 빌드 산출물 (PyInstaller)
+build/
+dist/
+*.spec
+
+# 편집기 / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 엑셀 임시 잠금 파일
+~$*.xls*

@@ -1,0 +1,9 @@
+# 엑셀 매크로 일괄 실행 봇
+# Python 3.9+ / Windows 전용 (Excel 데스크톱 필요)
+
+# ── GUI ─────────────────────────────────────────────
+# CLI(excel_macro_bot.py)만 쓴다면 없어도 됩니다.
+PyQt6>=6.6.0
+
+# ── Excel COM 자동화 + Win32 창 조작 ────────────────
+pywin32>=306; sys_platform == "win32"
