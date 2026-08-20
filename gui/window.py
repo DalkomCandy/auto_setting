@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import csv
+import os
+import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -17,8 +20,10 @@ from PyQt6.QtWidgets import (
 
 import excel_macro_bot as bot
 import fund_pipeline as fp
+from .overlay import ProcessingOverlay
 from .widgets import (
-    STATUS_COLORS, STATUS_LABELS, ConsoleView, FolderRow, ProgressPanel, settings,
+    STATUS_COLORS, STATUS_LABELS, ConsoleView, FolderRow, ProgressPanel,
+    config_path, settings,
 )
 from .worker import MacroListWorker, PipelineWorker, ScanWorker
 
@@ -49,6 +54,7 @@ def _row(*widgets, stretch: int = 0) -> QWidget:
 def _label(text: str) -> QLabel:
     tag = QLabel(text)
     tag.setProperty("hint", True)
+    tag.setWordWrap(True)   # 긴 힌트가 패널 폭을 억지로 늘려 가로 스크롤이 생기지 않게
     return tag
 
 
@@ -67,6 +73,7 @@ class MainWindow(QMainWindow):
         self.by_path: Dict[str, fp.FileResult] = {}
         self.worker: Optional[PipelineWorker] = None
         self.helper: Optional[object] = None
+        self.overlay = ProcessingOverlay(self._stop)
 
         self._build_ui()
         self._load_settings()
@@ -114,12 +121,48 @@ class MainWindow(QMainWindow):
         outer.addWidget(self._group_macros())
         outer.addWidget(self._group_advanced())
         outer.addStretch(1)
+        outer.addWidget(self._config_file_row())
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(panel)
         scroll.setMinimumWidth(490)
         return scroll
+
+    def _config_file_row(self) -> QWidget:
+        """설정이 저장되는 JSON 파일 위치를 보여주고 탐색기로 열어준다.
+
+        폴더 경로·매크로 파일 위치·매크로 이름 같은 값이 Windows 레지스트리가
+        아니라 이 JSON 파일에 그대로 저장된다. 열어서 직접 확인하거나
+        고치거나, 다른 PC 로 복사해 설정을 옮길 때 쓸 수 있다.
+        """
+        path = config_path()
+        label = QLabel(f"설정 파일: {path}")
+        label.setProperty("hint", True)
+        label.setWordWrap(True)
+        label.setToolTip(str(path))
+
+        open_btn = QPushButton("폴더 열기")
+        open_btn.setProperty("secondary", True)
+        open_btn.setFixedWidth(84)
+        open_btn.clicked.connect(self._open_config_folder)
+
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 6, 0, 0)
+        layout.addWidget(label, 1)
+        layout.addWidget(open_btn)
+        return row
+
+    def _open_config_folder(self) -> None:
+        folder = config_path().parent
+        folder.mkdir(parents=True, exist_ok=True)
+        if sys.platform.startswith("win"):
+            os.startfile(str(folder))  # noqa: S606 - 사용자가 누른 버튼에 대한 반응
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(folder)])
+        else:
+            subprocess.Popen(["xdg-open", str(folder)])
 
     def _group_target(self) -> QGroupBox:
         group = QGroupBox("대상 폴더")
@@ -171,6 +214,23 @@ class MainWindow(QMainWindow):
         form = QFormLayout(group)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         form.setSpacing(8)
+
+        # 매크로가 들어 있는 파일 경로 — 예전엔 '고급' 섹션에 숨어 있어서,
+        # 비워두면 조용히 기본 XLSTART 경로로 넘어가 "매크로 파일을 찾을 수
+        # 없습니다" 오류의 원인을 찾기 어려웠다. 항상 보이는 곳으로 옮겨서
+        # 직접 지정하도록 한다.
+        self.personal = QLineEdit()
+        self.personal.setObjectName("personal")
+        self.personal.setPlaceholderText("비우면 자동: XLSTART\\PERSONAL.XLSB")
+        personal_browse = QPushButton("찾기")
+        personal_browse.setProperty("secondary", True)
+        personal_browse.setFixedWidth(52)
+        personal_browse.clicked.connect(self._browse_personal)
+        form.addRow("매크로 파일", _row(self.personal, personal_browse))
+        form.addRow("", _label(
+            "매크로가 들어 있는 .xlsb/.xlsm/.xlam 파일 경로를 직접 지정하세요.\n"
+            "비워두면 XLSTART\\PERSONAL.XLSB 를 시도하지만, 그 위치에 없다면 실패합니다."
+        ))
 
         defaults = fp.PipelineConfig()
         self.macro_overview = self._macro_box("macro_overview", defaults.macro_overview)
@@ -321,16 +381,7 @@ class MainWindow(QMainWindow):
         self.dismiss.setChecked(True)
         form.addRow("", self.dismiss)
 
-        self.personal = QLineEdit()
-        self.personal.setObjectName("personal")
-        self.personal.setPlaceholderText("자동 (XLSTART\\PERSONAL.XLSB)")
-        browse = QPushButton("찾기")
-        browse.setProperty("secondary", True)
-        browse.setFixedWidth(52)
-        browse.clicked.connect(self._browse_personal)
-        form.addRow("매크로 파일", _row(self.personal, browse))
-
-        self.no_personal = QCheckBox("매크로 파일을 열지 않음")
+        self.no_personal = QCheckBox("매크로 파일을 열지 않음 (매크로가 대상 파일 자체에 있을 때)")
         self.no_personal.setObjectName("no_personal")
         form.addRow("", self.no_personal)
 
@@ -628,12 +679,19 @@ class MainWindow(QMainWindow):
         self.worker.completed.connect(self._on_completed)
         self.worker.failed.connect(self._on_failed)
         self.worker.finished.connect(lambda: self._set_running(False))
+        self.worker.finished.connect(self.overlay.hide_all)
+
+        # Excel 이 셀을 선택하고 매크로 창을 열고 닫는 동안 화면을 흰색으로
+        # 덮는다 — 다른 사람 눈에 데이터가 노출되지 않게 하고, 사용자가
+        # 실수로 그 위를 클릭해 자동화(Win32 창 탐색)를 방해하지 않게 한다.
+        self.overlay.show_all(status=f"0 / {len(files)}")
         self.worker.start()
 
     def _stop(self) -> None:
         if self.worker is not None and self.worker.isRunning():
             self.worker.stop()
             self.stop_btn.setEnabled(False)
+            self.overlay.update_status("중지 요청됨 — 처리 중인 파일이 끝나면 멈춥니다…")
             self.console.append_message(
                 "중지 요청 — 지금 처리 중인 파일이 끝나면 멈춥니다.", "warning"
             )
@@ -644,6 +702,7 @@ class MainWindow(QMainWindow):
             self._set_status(row, "running")
             self.table.scrollToItem(self.table.item(row, 0))
         self.progress.advance(index - 1, total, path.name)
+        self.overlay.update_status(f"{index} / {total} 처리 중\n{path.name}")
 
     def _on_file_done(self, index: int, total: int, result: fp.FileResult) -> None:
         self.results.append(result)
@@ -664,6 +723,7 @@ class MainWindow(QMainWindow):
         self.progress.advance(index, total, result.path.name)
 
     def _on_completed(self, results: List[fp.FileResult]) -> None:
+        self.overlay.hide_all()
         counts = {"ok": 0, "skipped": 0, "failed": 0}
         for item in results:
             counts[item.status] += 1
@@ -688,6 +748,7 @@ class MainWindow(QMainWindow):
             )
 
     def _on_failed(self, message: str) -> None:
+        self.overlay.hide_all()
         self.console.append_message(f"❌ {message}", "error")
         self.progress.reset()
         self.statusBar().showMessage("실행 실패")
@@ -816,8 +877,9 @@ class MainWindow(QMainWindow):
     def _load_settings(self) -> None:
         """저장된 값이 있는 항목만 덮어쓴다.
 
-        QSettings.value(key, None, str) 는 키가 없어도 빈 문자열을 돌려주므로
-        기본값이 지워진다. 반드시 contains() 로 존재 여부를 먼저 확인할 것.
+        contains() 로 먼저 확인하는 이유: 저장된 적 없는 필드까지
+        widget.setText("") 로 덮어써서 위젯 기본값(플레이스홀더 등)을
+        지워버리지 않기 위해서다.
         """
         store = settings()
         if store.contains("root/last"):
@@ -856,6 +918,8 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         if self.worker is not None and self.worker.isRunning():
+            was_covered = self.overlay.is_visible
+            self.overlay.hide_all()   # 흰 화면 뒤에 확인창이 가려지지 않게
             answer = QMessageBox.question(
                 self, "작업 진행 중",
                 "매크로를 실행하는 중입니다. 정말 종료할까요?\n"
@@ -864,9 +928,12 @@ class MainWindow(QMainWindow):
                 QMessageBox.StandardButton.No,
             )
             if answer != QMessageBox.StandardButton.Yes:
+                if was_covered:
+                    self.overlay.show_all(self.progress.status.text())
                 event.ignore()
                 return
             self.worker.stop()
             self.worker.wait(3000)
+        self.overlay.hide_all()
         self._save_settings()
         event.accept()

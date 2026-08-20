@@ -274,6 +274,7 @@ def open_macro_host(xl, path: Optional[Path], log: Logger):
         return None
     if not path.exists():
         log(f"⚠ 매크로 파일을 찾을 수 없습니다: {path}")
+        log("GUI 의 '매크로 파일' 칸에 실제 위치를 직접 지정하세요.", indent=1)
         return None
 
     for book in xl.Workbooks:

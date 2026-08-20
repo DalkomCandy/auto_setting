@@ -1,11 +1,13 @@
 """재사용 위젯 — 콘솔, 진행률, 폴더 입력"""
 from __future__ import annotations
 
+import json
+import os
 import time
 from pathlib import Path
 from typing import Optional
 
-from PyQt6.QtCore import Qt, QSettings, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent
 from PyQt6.QtWidgets import (
     QComboBox, QFileDialog, QHBoxLayout, QLabel, QProgressBar, QPushButton,
@@ -41,8 +43,77 @@ STATUS_LABELS = {
 _HISTORY_MAX = 8
 
 
-def settings() -> QSettings:
-    return QSettings(ORG_NAME, APP_NAME)
+def _config_dir() -> Path:
+    """설정 파일이 들어갈 사용자별 폴더. 저장소 밖이라 git pull 과 무관하다."""
+    appdata = os.environ.get("APPDATA")
+    base = Path(appdata) if appdata else Path.home() / ".config"
+    return base / ORG_NAME
+
+
+def config_path() -> Path:
+    """설정 JSON 파일의 전체 경로. GUI 에서 '이 위치 열기' 버튼에도 쓴다."""
+    return _config_dir() / "config.json"
+
+
+class JsonSettings:
+    """QSettings 를 대신하는 JSON 파일 저장소.
+
+    Windows 레지스트리는 사람이 열어보거나 백업·공유하기 번거로워서,
+    같은 인터페이스(value/setValue/contains/clear/sync)를 유지한 채
+    사람이 읽고 고칠 수 있는 JSON 파일로 바꿨다. 호출부(window.py 의
+    _load_settings/_save_settings, 이 파일의 FolderRow)는 수정할 필요가 없다.
+    """
+
+    def __init__(self):
+        self.path = config_path()
+
+    def _read(self) -> dict:
+        try:
+            return json.loads(self.path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return {}
+
+    def _write(self, data: dict) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+
+    def contains(self, key: str) -> bool:
+        return key in self._read()
+
+    def value(self, key: str, default=None, type_=None):
+        data = self._read()
+        if key not in data:
+            return default
+        raw = data[key]
+        if type_ is None:
+            return raw
+        if type_ is bool:
+            return bool(raw)
+        if type_ is int:
+            return int(raw)
+        if type_ is float:
+            return float(raw)
+        if type_ is str:
+            return str(raw)
+        return raw
+
+    def setValue(self, key: str, value) -> None:
+        data = self._read()
+        data[key] = value
+        self._write(data)
+
+    def clear(self) -> None:
+        self._write({})
+
+    def sync(self) -> None:
+        pass  # setValue 마다 이미 파일에 쓰므로 할 일 없음
+
+
+def settings() -> JsonSettings:
+    return JsonSettings()
 
 
 class ConsoleView(QTextEdit):
