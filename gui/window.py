@@ -189,16 +189,23 @@ class MainWindow(QMainWindow):
         form.addRow("11단계", self.macro_interest)
         form.addRow("", self.macro_btn)
         form.addRow("", _label(
-            "VBA 이름에는 공백을 쓸 수 없어 실제 이름은 '수익_개요' 형태일 수 있습니다.\n"
-            "'!' 없이 넣으면 PERSONAL.XLSB! 접두사와 밑줄 변형을 자동으로 시도합니다."
+            "이름을 자동으로 추측하지 않습니다 — 입력한 그대로 실행합니다.\n"
+            "[목록 불러오기]로 정확한 이름을 확인해 그대로 넣거나(예: PERSONAL.XLSB!수익_개요),\n"
+            "직접 확인했다면 손으로 입력하세요."
         ))
         return group
 
-    def _macro_box(self, name: str, default: str) -> QComboBox:
+    def _macro_box(self, name: str, example: str) -> QComboBox:
+        """빈 값으로 시작해 실제 이름을 직접 입력하도록 강제한다.
+
+        예전에는 여기 실제 값처럼 보이는 기본값('수익 개요')을 채워뒀는데,
+        VBA 이름에는 공백을 못 써서 그대로 실행하면 항상 실패했다.
+        이제 예시는 플레이스홀더로만 보여주고 실제 값은 비워둔다.
+        """
         box = QComboBox()
         box.setObjectName(name)
         box.setEditable(True)
-        box.setCurrentText(default)
+        box.lineEdit().setPlaceholderText(f"예: PERSONAL.XLSB!{example.replace(' ', '_')}")
         return box
 
     def _group_advanced(self) -> QGroupBox:

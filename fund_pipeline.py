@@ -620,9 +620,8 @@ def run_pipeline(root: Path, files: List[Path], cfg: PipelineConfig, inputs: Fun
     results: List[FileResult] = []
     try:
         xl = bot.start_excel()
-        host = bot.open_macro_host(xl, personal, log)
-        host_name = host.Name if host else None
-        runners = {name: MacroRunner(name, host_name) for name in cfg.macro_names()}
+        bot.open_macro_host(xl, personal, log)
+        runners = {name: MacroRunner(name) for name in cfg.macro_names()}
         pid = bot.excel_pid(xl)
 
         for index, path in enumerate(files, start=1):

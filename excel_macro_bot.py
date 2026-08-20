@@ -47,12 +47,6 @@ PROC_RE = re.compile(
     re.MULTILINE | re.IGNORECASE,
 )
 
-#: Application.Run 이 "매크로를 찾을 수 없음"으로 실패했을 때 나타나는 문구
-MISSING_MACRO_HINTS = (
-    "매크로", "macro", "cannot be found", "찾을 수 없", "may not be available",
-    "실행할 수 없", "cannot be run",
-)
-
 MSO_AUTOMATION_SECURITY_LOW = 1
 
 
@@ -211,58 +205,31 @@ class DialogHandler(threading.Thread):
 
 # ── 매크로 실행기 ───────────────────────────────────
 class MacroRunner:
-    """매크로 이름을 해석해 Application.Run 을 호출한다.
+    """입력된 이름 그대로 Application.Run 을 호출한다.
 
-    `!` 가 포함된 완전한 이름이면 그대로 쓰고, 아니면 몇 가지 후보를
-    첫 파일에서 한 번만 시도해 실제로 동작하는 이름을 찾아 고정한다.
+    자동으로 이름을 추측하지 않는다 — VBA 프로시저 이름에는 공백을 쓸 수
+    없어 빠른 실행 버튼 이름("수익 개요")과 실제 매크로 이름("수익_개요")이
+    다른 경우가 흔하고, 후보를 여러 개 시도하면 의도와 다른 매크로가
+    조용히 실행될 위험이 있다. 그래서 사용자가 [목록 불러오기]로 정확한
+    이름을 확인해 직접 입력한 값을 그대로 사용한다.
     """
 
-    def __init__(self, name: str, host_book: Optional[str] = None):
-        self.name = name
-        self.candidates = self._build_candidates(name, host_book)
-        self.resolved: Optional[str] = None
-
-    @staticmethod
-    def _build_candidates(name: str, host_book: Optional[str]) -> List[str]:
-        if "!" in name:
-            return [name]
-
-        # VBA 프로시저 이름에는 공백을 쓸 수 없다.
-        # 빠른 실행 도구 버튼 이름이 "수익 개요"라면 실제 이름은 "수익_개요"인 경우가 많다.
-        bare = [name]
-        if " " in name:
-            bare.append(name.replace(" ", "_"))
-
-        candidates = list(bare)
-        if host_book:
-            # 파일명에 점/공백이 있으므로 작은따옴표로 감싼 형태도 시도
-            candidates += [f"{host_book}!{n}" for n in bare]
-            candidates += [f"'{host_book}'!{n}" for n in bare]
-        return candidates
+    def __init__(self, name: str):
+        self.name = name.strip()
 
     def run(self, xl) -> str:
-        if self.resolved:
-            xl.Run(self.resolved)
-            return self.resolved
-
-        attempts = []
-        for candidate in self.candidates:
-            try:
-                xl.Run(candidate)
-            except com_error as exc:
-                detail = describe_com_error(exc)
-                attempts.append(f"  - {candidate!r}: {detail}")
-                if not _looks_missing(detail):
-                    # 매크로가 실제로 실행되다 오류가 난 것이므로 다른 후보를 시도하면 안 된다
-                    raise MacroError(f"매크로 {candidate!r} 실행 중 오류: {detail}") from exc
-                continue
-            self.resolved = candidate
-            return candidate
-
-        raise MacroError(
-            "매크로를 찾지 못했습니다. --list-macros 로 정확한 이름을 확인하세요.\n"
-            + "\n".join(attempts)
-        )
+        if not self.name:
+            raise MacroError("매크로 이름이 비어 있습니다.")
+        try:
+            xl.Run(self.name)
+        except com_error as exc:
+            detail = describe_com_error(exc)
+            raise MacroError(
+                f"매크로 {self.name!r} 실행 실패: {detail}\n"
+                "[목록 불러오기]로 정확한 이름을 확인해 그대로 입력하세요 "
+                "(예: PERSONAL.XLSB!수익_개요)."
+            ) from exc
+        return self.name
 
 
 def describe_com_error(exc: BaseException) -> str:
@@ -270,11 +237,6 @@ def describe_com_error(exc: BaseException) -> str:
     if info and len(info) > 2 and info[2]:
         return str(info[2]).strip()
     return str(exc)
-
-
-def _looks_missing(detail: str) -> bool:
-    low = detail.casefold()
-    return any(hint.casefold() in low for hint in MISSING_MACRO_HINTS)
 
 
 # ── Excel 헬퍼 ──────────────────────────────────────
@@ -535,7 +497,7 @@ def run(cfg: Settings, personal: Optional[Path], keep_open: bool, log: Logger,
     try:
         xl = start_excel()
         host = open_macro_host(xl, personal, log)
-        runner = MacroRunner(cfg.macro, host.Name if host else None)
+        runner = MacroRunner(cfg.macro)
         pid = excel_pid(xl)
 
         for index, path in enumerate(files, start=1):
@@ -596,8 +558,9 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--root", type=Path, help="대상 최상위 폴더 (all폴더)")
-    parser.add_argument("--macro", default="수익_개요",
-                        help="실행할 매크로 이름. 예: PERSONAL.XLSB!수익_개요 (기본: %(default)s)")
+    parser.add_argument("--macro", default="",
+                        help="실행할 매크로 이름 (정확한 전체 이름, 예: PERSONAL.XLSB!수익_개요). "
+                             "자동으로 추측하지 않으므로 --list-macros 로 확인한 이름을 그대로 입력하세요.")
     parser.add_argument("--prefix", default="26.3Q",
                         help="파일명 접두사 필터 (기본: %(default)s, 빈 문자열이면 전체)")
     parser.add_argument("--pattern", default="*.xlsx",
@@ -674,6 +637,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     root = args.root.expanduser()
     if not root.is_dir():
         log(f"❌ 폴더를 찾을 수 없습니다: {root}")
+        return 2
+    if not args.macro.strip() and not args.dry_run:
+        log("❌ --macro 로 실행할 매크로의 정확한 이름을 지정하세요. "
+            "(--list-macros 로 먼저 확인하세요. --dry-run 은 매크로 없이도 가능합니다.)")
         return 2
 
     cfg = Settings(

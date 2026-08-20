@@ -36,11 +36,27 @@ all폴더/
 ## 설치와 실행
 
 ```cmd
+git clone https://github.com/DalkomCandy/auto_setting.git
+cd auto_setting
 pip install -r requirements.txt
 python main.py
 ```
 
 `run_gui.bat` 을 더블클릭해도 됩니다. Python 3.9+, Windows, Excel 데스크톱이 필요합니다.
+
+## 업데이트
+
+새 버전이 나오면 클론해 둔 폴더에서:
+
+```cmd
+git pull
+python main.py
+```
+
+**이것만으로 충분합니다.** 폴더 경로·매크로 이름·평가자 이름 같은 설정은 저장소 파일이 아니라
+Windows 안(사용자별 저장소)에 따로 저장되므로 `git pull` 로 지워지거나 충돌하지 않습니다.
+`requirements.txt` 가 바뀐 경우(새 라이브러리 추가 등)에만 `pip install -r requirements.txt` 를
+한 번 더 실행하면 됩니다 — 커밋 메시지나 릴리스 노트에 표시됩니다.
 
 ---
 
@@ -93,7 +109,10 @@ Excel을 잠깐 열어 사용 가능한 매크로 이름을 읽어와 4개 드�
 
 > 빠른 실행 버튼에 `수익 개요`로 보여도 **VBA 프로시저 이름에는 공백을 쓸 수 없습니다.**
 > 실제 이름은 `수익_개요`일 가능성이 큽니다.
-> `!` 없이 입력하면 봇이 `PERSONAL.XLSB!` 접두사와 공백→밑줄 변형을 자동으로 시도합니다.
+>
+> **이름을 자동으로 추측하지 않습니다.** 입력한 이름을 그대로 실행하므로,
+> [목록 불러오기]로 확인한 정확한 전체 이름(예: `PERSONAL.XLSB!수익_개요`)을
+> 그대로 입력하세요. 잘못된 이름을 입력하면 그 자리에서 바로 오류로 알려줍니다.
 
 <details>
 <summary>「VBA 프로젝트에 접근할 수 없습니다」가 나오면</summary>
@@ -237,7 +256,7 @@ python excel_macro_bot.py --root "D:\all폴더" --macro "PERSONAL.XLSB!수익_�
 | `gui/widgets.py` | 콘솔·진행률·폴더 입력 위젯 |
 | `gui/style.qss` | 스타일시트 |
 | `run_gui.bat` | GUI 실행 |
-| `run.bat` | 진단 CLI 실행 (매크로 목록 / 창 구조 확인) |
+| `run.bat` | 진단 CLI 실행 (매크로 목록 / 창 구조 확인). 값은 파일을 고치지 않고 인자로 받습니다 |
 
 `Python` 저장소의 `Auto_Tools`(업무 자동화 매니저)와는 완전히 독립된 프로그램입니다.
 
