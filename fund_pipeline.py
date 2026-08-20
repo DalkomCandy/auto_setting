@@ -228,10 +228,30 @@ def _safe(item) -> str:
 
 
 def address(cell) -> str:
+    """셀 주소를 A1 형식으로.
+
+    pywin32 지연 바인딩에서 Range.Address 는 메서드가 아니라 이미 평가된
+    문자열('$B$4')로 돌아온다. 거기에 인자를 붙여 호출하면
+    TypeError: 'str' object is not callable 이 난다.
+    조기 바인딩(gencache)에서는 반대로 메서드로 잡히므로 둘 다 받아준다.
+    """
     try:
-        return str(cell.Address(False, False))
-    except com_error:
+        raw = cell.Address
+        if callable(raw):
+            raw = raw(False, False)
+        return str(raw).replace("$", "")
+    except Exception:
         return "?"
+
+
+def offset(cell, down: int = 0, right: int = 0):
+    """cell 에서 아래로 down, 오른쪽으로 right 만큼 이동한 셀.
+
+    Range.Offset 도 Address 와 같은 부류라 바인딩 방식에 따라 메서드가 아닐
+    수 있는데, 그 경우 예외 없이 엉뚱한 셀을 돌려준다. 그래서 시트 좌표로
+    직접 계산해 어떤 환경에서도 같은 결과가 나오게 한다.
+    """
+    return cell.Worksheet.Cells(cell.Row + down, cell.Column + right)
 
 
 # ── 파이프라인 ──────────────────────────────────────
@@ -369,7 +389,7 @@ class WorkbookPipeline:
         self.sheet.Activate()
 
         down, right = self.cfg.fund_offset
-        cell = anchor.Offset(down, right)
+        cell = offset(anchor, down, right)
         value = cell_text(cell)
         where = f"{self.sheet.Name}!{address(cell)}"
 
@@ -391,7 +411,7 @@ class WorkbookPipeline:
         target = f"{self.fund_id}{self.cfg.nav_suffix}"
         anchor = name_anchor(self.book, target)
         down, right = self.cfg.nav_offset
-        cell = anchor.Offset(down, right)
+        cell = offset(anchor, down, right)
         value = as_date_text(cell)
         where = f"{anchor.Worksheet.Name}!{address(cell)}"
 
@@ -404,7 +424,7 @@ class WorkbookPipeline:
         target = f"{self.fund_id}{self.cfg.inv_suffix}"
         anchor = name_anchor(self.book, target)
         sheet = anchor.Worksheet
-        first = anchor.Offset(self.cfg.inv_first_row_offset, 0)
+        first = offset(anchor, self.cfg.inv_first_row_offset, 0)
 
         where = f"{target}={address(anchor)} 기준 아래{self.cfg.inv_first_row_offset} " \
                 f"→ {sheet.Name}!{address(first)}"
@@ -417,7 +437,7 @@ class WorkbookPipeline:
             return f"0개 ({where} 비어 있음)"
 
         # Ctrl+↓ 와 같은 동작. 바로 아래가 비어 있으면 항목이 하나뿐이다.
-        if is_blank(first.Offset(1, 0)):
+        if is_blank(offset(first, 1, 0)):
             last_row = first.Row
         else:
             last_row = first.End(XL_DOWN).Row
@@ -493,12 +513,12 @@ class WorkbookPipeline:
             ("리뷰어", self.inputs.reviewer),
         ]
         start = self.sheet.Range(self.cfg.header_cell)
-        for offset, (label, value) in enumerate(values):
-            cell = start.Offset(offset, 0)
+        for index, (label, value) in enumerate(values):
+            cell = offset(start, index, 0)
             if not value:
                 raise StepError(f"{label} 값이 비어 있습니다 ({address(cell)})")
             cell.Value = value
-        first, last = address(start), address(start.Offset(4, 0))
+        first, last = address(start), address(offset(start, 4, 0))
         return f"{first}:{last} = " + " / ".join(v for _, v in values)
 
     def step_nav(self) -> str:
@@ -513,7 +533,7 @@ class WorkbookPipeline:
 
         start = self.sheet.Range(self.cfg.items_cell)
         count = len(self.items)
-        dest = self.sheet.Range(start, start.Offset(count - 1, 0))
+        dest = self.sheet.Range(start, offset(start, count - 1, 0))
 
         # '005930' 처럼 앞자리 0이 있는 아이디가 숫자로 바뀌지 않게
         if any(isinstance(v, str) for v in self.items):
@@ -529,8 +549,8 @@ class WorkbookPipeline:
             )
 
         start = self.sheet.Range(self.cfg.items_cell)
-        last = start.Offset(len(self.items) - 1, 0)
-        target = last.Offset(self.cfg.interest_row_offset, 0)
+        last = offset(start, len(self.items) - 1, 0)
+        target = offset(last, self.cfg.interest_row_offset, 0)
         return self._run_macro(self.cfg.macro_interest, address(target))
 
     # ── 매크로 실행 + 대화상자 처리 ──────────────
